@@ -1,0 +1,20 @@
+.. SPDX-License-Identifier: GPL-2.0
+
+================================================================
+Linux Base Driver for Motorcomm(R) Gigabit PCI Express Adapters
+================================================================
+
+Motorcomm Gigabit Linux driver.
+Copyright (c) 2021 - 2024 Motor-comm Co., Ltd.
+
+
+Contents
+========
+
+- Support
+
+
+Support
+=======
+If you got any problem, contact Motorcomm support team via support@motor-comm.com
+and Cc: netdev.
