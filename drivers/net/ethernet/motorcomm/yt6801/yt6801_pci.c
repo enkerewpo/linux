@@ -103,6 +103,59 @@ static void fxgmac_shutdown(struct pci_dev *pcidev)
 	}
 	mutex_unlock(&priv->mutex);
 }
+
+static int fxgmac_suspend(struct device *device)
+{
+	struct fxgmac_pdata *priv = dev_get_drvdata(device);
+	struct net_device *netdev = priv->netdev;
+	int ret = 0;
+
+	mutex_lock(&priv->mutex);
+	if (priv->dev_state != FXGMAC_DEV_START)
+		goto unlock;
+
+	if (netif_running(netdev))
+		__fxgmac_shutdown(to_pci_dev(device));
+
+	priv->dev_state = FXGMAC_DEV_SUSPEND;
+unlock:
+	mutex_unlock(&priv->mutex);
+
+	return ret;
+}
+
+static int fxgmac_resume(struct device *device)
+{
+	struct fxgmac_pdata *priv = dev_get_drvdata(device);
+	struct net_device *netdev = priv->netdev;
+	int ret = 0;
+
+	mutex_lock(&priv->mutex);
+	if (priv->dev_state != FXGMAC_DEV_SUSPEND)
+		goto unlock;
+
+	priv->dev_state = FXGMAC_DEV_RESUME;
+	__clear_bit(FXGMAC_POWER_STATE_DOWN, &priv->powerstate);
+
+	rtnl_lock();
+	if (netif_running(netdev)) {
+		ret = fxgmac_net_powerup(priv);
+		if (ret < 0) {
+			dev_err(device, "%s, fxgmac_net_powerup err:%d\n",
+				__func__, ret);
+			goto unlock;
+		}
+	}
+
+	netif_device_attach(netdev);
+	rtnl_unlock();
+
+unlock:
+	mutex_unlock(&priv->mutex);
+
+	return ret;
+}
+
 #define MOTORCOMM_PCI_ID			0x1f0a
 #define YT6801_PCI_DEVICE_ID			0x6801
 
@@ -113,11 +166,16 @@ static const struct pci_device_id fxgmac_pci_tbl[] = {
 
 MODULE_DEVICE_TABLE(pci, fxgmac_pci_tbl);
 
+static const struct dev_pm_ops fxgmac_pm_ops = {
+	SYSTEM_SLEEP_PM_OPS(fxgmac_suspend, fxgmac_resume)
+};
+
 static struct pci_driver fxgmac_pci_driver = {
 	.name		= FXGMAC_DRV_NAME,
 	.id_table	= fxgmac_pci_tbl,
 	.probe		= fxgmac_probe,
 	.remove		= fxgmac_remove,
+	.driver.pm	= pm_ptr(&fxgmac_pm_ops),
 	.shutdown	= fxgmac_shutdown,
 };
 

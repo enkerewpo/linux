@@ -1378,6 +1378,20 @@ static void fxgmac_restart_work(struct work_struct *work)
 	rtnl_unlock();
 }
 
+int fxgmac_net_powerup(struct fxgmac_pdata *priv)
+{
+	int ret;
+
+	priv->powerstate = 0;/* clear all bits as normal now */
+	ret = fxgmac_start(priv);
+	if (ret < 0) {
+		yt_err(priv, "%s: fxgmac_start ret: %d\n", __func__, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 static void fxgmac_config_powerdown(struct fxgmac_pdata *priv)
 {
 	FXGMAC_MAC_IO_WR_BITS(priv, MAC_CR, RE, 1); /* Enable MAC Rx */
