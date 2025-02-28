@@ -1475,6 +1475,68 @@ unlock:
 	return ret;
 }
 
+static int fxgmac_close(struct net_device *netdev)
+{
+	struct fxgmac_pdata *priv = netdev_priv(netdev);
+
+	mutex_lock(&priv->mutex);
+	fxgmac_stop(priv); /* Stop the device */
+	priv->dev_state = FXGMAC_DEV_CLOSE;
+	fxgmac_channels_rings_free(priv); /* Free the channels and rings */
+	fxgmac_phy_reset(priv);
+	phy_disconnect(priv->phydev);
+	mutex_unlock(&priv->mutex);
+	return 0;
+}
+
+static void fxgmac_dump_state(struct fxgmac_pdata *priv)
+{
+	struct fxgmac_channel *channel = priv->channel_head;
+	struct fxgmac_ring *ring = &channel->tx_ring[0];
+
+	yt_err(priv, "Tx descriptor info:\n");
+	yt_err(priv, "Tx cur = 0x%x\n", ring->cur);
+	yt_err(priv, "Tx dirty = 0x%x\n", ring->dirty);
+	yt_err(priv, "Tx dma_desc_head = %pad\n", &ring->dma_desc_head);
+	yt_err(priv, "Tx desc_data_head = %pad\n", &ring->desc_data_head);
+
+	for (u32 i = 0; i < priv->channel_count; i++, channel++) {
+		ring = &channel->rx_ring[0];
+		yt_err(priv, "Rx[%d] descriptor info:\n", i);
+		yt_err(priv, "Rx cur = 0x%x\n", ring->cur);
+		yt_err(priv, "Rx dirty = 0x%x\n", ring->dirty);
+		yt_err(priv, "Rx dma_desc_head = %pad\n", &ring->dma_desc_head);
+		yt_err(priv, "Rx desc_data_head = %pad\n",
+		       &ring->desc_data_head);
+	}
+
+	yt_err(priv, "Device Registers:\n");
+	yt_err(priv, "MAC_ISR = %08x\n", FXGMAC_MAC_IO_RD(priv, MAC_ISR));
+	yt_err(priv, "MAC_IER = %08x\n", FXGMAC_MAC_IO_RD(priv, MAC_IER));
+	yt_err(priv, "MMC_RISR = %08x\n", FXGMAC_MAC_IO_RD(priv, MMC_RISR));
+	yt_err(priv, "MMC_RIER = %08x\n", FXGMAC_MAC_IO_RD(priv, MMC_RIER));
+	yt_err(priv, "MMC_TISR = %08x\n", FXGMAC_MAC_IO_RD(priv, MMC_TISR));
+	yt_err(priv, "MMC_TIER = %08x\n", FXGMAC_MAC_IO_RD(priv, MMC_TIER));
+
+	yt_err(priv, "EPHY_CTRL = %04x\n", FXGMAC_IO_RD(priv, EPHY_CTRL));
+	yt_err(priv, "MGMT_INT_CTRL0 = %04x\n",
+	       FXGMAC_IO_RD(priv, MGMT_INT_CTRL0));
+	yt_err(priv, "MSIX_TBL_MASK = %04x\n",
+	       FXGMAC_IO_RD(priv, MSIX_TBL_MASK));
+
+	yt_err(priv, "Dump nonstick regs:\n");
+	for (u32 i = GLOBAL_CTRL0; i < MSI_PBA; i += 4)
+		yt_err(priv, "[%d] = %04x\n", i / 4, FXGMAC_IO_RD(priv, i));
+}
+
+static void fxgmac_tx_timeout(struct net_device *netdev, unsigned int unused)
+{
+	struct fxgmac_pdata *priv = netdev_priv(netdev);
+
+	fxgmac_dump_state(priv);
+	schedule_work(&priv->restart_work);
+}
+
 #define EFUSE_FISRT_UPDATE_ADDR				255
 #define EFUSE_SECOND_UPDATE_ADDR			209
 #define EFUSE_MAX_ENTRY					39
@@ -2323,9 +2385,33 @@ static netdev_tx_t fxgmac_xmit(struct sk_buff *skb, struct net_device *netdev)
 	return NETDEV_TX_OK;
 }
 
+#ifdef CONFIG_NET_POLL_CONTROLLER
+static void fxgmac_poll_controller(struct net_device *netdev)
+{
+	struct fxgmac_pdata *priv = netdev_priv(netdev);
+	struct fxgmac_channel *channel;
+
+	if (priv->per_channel_irq) {
+		channel = priv->channel_head;
+		for (u32 i = 0; i < priv->channel_count; i++, channel++)
+			fxgmac_dma_isr(channel->dma_irq_rx, channel);
+	} else {
+		disable_irq(priv->dev_irq);
+		fxgmac_isr(priv->dev_irq, priv);
+		enable_irq(priv->dev_irq);
+	}
+}
+#endif /* CONFIG_NET_POLL_CONTROLLER */
+
 static const struct net_device_ops fxgmac_netdev_ops = {
 	.ndo_open		= fxgmac_open,
+	.ndo_stop		= fxgmac_close,
 	.ndo_start_xmit		= fxgmac_xmit,
+	.ndo_tx_timeout		= fxgmac_tx_timeout,
+	.ndo_validate_addr	= eth_validate_addr,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	= fxgmac_poll_controller,
+#endif
 };
 
 const struct net_device_ops *fxgmac_get_netdev_ops(void)
@@ -2477,6 +2563,93 @@ static int fxgmac_one_poll_tx(struct napi_struct *napi, int budget)
 		fxgmac_enable_msix_one_irq(priv, MSI_ID_TXQ0);
 
 	return ret;
+}
+
+static int fxgmac_dev_read(struct fxgmac_channel *channel)
+{
+	struct fxgmac_pdata *priv = channel->priv;
+	struct fxgmac_ring *ring = channel->rx_ring;
+	struct net_device *netdev = priv->netdev;
+	static unsigned int cnt_incomplete;
+	struct fxgmac_desc_data *desc_data;
+	struct fxgmac_dma_desc *dma_desc;
+	struct fxgmac_pkt_info *pkt_info;
+	u32 ipce, iphe, rxparser;
+	unsigned int err, etlt;
+
+	desc_data = FXGMAC_GET_DESC_DATA(ring, ring->cur);
+	dma_desc = desc_data->dma_desc;
+	pkt_info = &ring->pkt_info;
+
+	/* Check for data availability */
+	if (FXGMAC_GET_BITS_LE(dma_desc->desc3, RX_NORMAL_DESC3, OWN))
+		return 1;
+
+	/* Make sure descriptor fields are read after reading the OWN bit */
+	dma_rmb();
+
+	if (netif_msg_rx_status(priv))
+		fxgmac_dump_rx_desc(priv, ring, ring->cur);
+
+	/* Normal Descriptor, be sure Context Descriptor bit is off */
+	FXGMAC_SET_BITS(pkt_info->attr, ATTR_RX, CONTEXT, 0);
+
+	/* Indicate if a Context Descriptor is next */
+	/* Get the header length */
+	if (FXGMAC_GET_BITS_LE(dma_desc->desc3, RX_NORMAL_DESC3, FD)) {
+		desc_data->rx.hdr_len = FXGMAC_GET_BITS_LE(dma_desc->desc2,
+							   RX_NORMAL_DESC2, HL);
+	}
+
+	/* Get the pkt_info length */
+	desc_data->rx.len =
+		FXGMAC_GET_BITS_LE(dma_desc->desc3, RX_NORMAL_DESC3, PL);
+
+	if (!FXGMAC_GET_BITS_LE(dma_desc->desc3, RX_NORMAL_DESC3, LD)) {
+		/* Not all the data has been transferred for this pkt_info */
+		FXGMAC_SET_BITS(pkt_info->attr, ATTR_RX, INCOMPLETE, 1);
+		cnt_incomplete++;
+		return 0;
+	}
+
+	if ((cnt_incomplete) && netif_msg_rx_status(priv))
+		yt_dbg(priv, "%s, rx back to normal and incomplete cnt=%u\n",
+		       __func__, cnt_incomplete);
+	cnt_incomplete = 0;
+
+	/* This is the last of the data for this pkt_info */
+	FXGMAC_SET_BITS(pkt_info->attr, ATTR_RX, INCOMPLETE, 0);
+
+	/* Set checksum done indicator as appropriate */
+	if (netdev->features & NETIF_F_RXCSUM) {
+		ipce = FXGMAC_GET_BITS_LE(dma_desc->desc1, RX_NORMAL_DESC1_WB,
+					  IPCE);
+		iphe = FXGMAC_GET_BITS_LE(dma_desc->desc1, RX_NORMAL_DESC1_WB,
+					  IPHE);
+		if (!ipce && !iphe)
+			FXGMAC_SET_BITS(pkt_info->attr, ATTR_RX, CSUM_DONE, 1);
+		else
+			return 0;
+	}
+
+	/* Check for errors (only valid in last descriptor) */
+	err = FXGMAC_GET_BITS_LE(dma_desc->desc3, RX_NORMAL_DESC3, ES);
+	rxparser = FXGMAC_GET_BITS_LE(dma_desc->desc2, RX_NORMAL_DESC2_WB,
+				      RAPARSER);
+	/* Error or incomplete parsing due to ECC error */
+	if (err || rxparser == 0x7) {
+		FXGMAC_SET_BITS(pkt_info->errors, ERRORS_RX, FRAME, 1);
+		return 0;
+	}
+
+	etlt = FXGMAC_GET_BITS_LE(dma_desc->desc3, RX_NORMAL_DESC3, ETLT);
+	if (etlt == 0x4 && (netdev->features & NETIF_F_HW_VLAN_CTAG_RX)) {
+		FXGMAC_SET_BITS(pkt_info->attr, ATTR_RX, VLAN_CTAG, 1);
+		pkt_info->vlan_ctag = FXGMAC_GET_BITS_LE(dma_desc->desc0,
+							 RX_NORMAL_DESC0, OVT);
+	}
+
+	return 0;
 }
 
 static unsigned int fxgmac_desc_rx_dirty(struct fxgmac_ring *ring)
