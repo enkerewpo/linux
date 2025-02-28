@@ -11,6 +11,8 @@
 #include "yt6801.h"
 #include "yt6801_desc.h"
 
+const struct net_device_ops *fxgmac_get_netdev_ops(void);
+
 #define PHY_WR_CONFIG(reg_offset)	(0x8000205 + ((reg_offset) * 0x10000))
 static int fxgmac_phy_write_reg(struct fxgmac_pdata *priv, u32 reg_id, u32 data)
 {
@@ -391,6 +393,32 @@ static void fxgmac_stop(struct fxgmac_pdata *priv)
 	netdev_tx_reset_queue(txq);
 }
 
+static void fxgmac_restart(struct fxgmac_pdata *priv)
+{
+	int ret;
+
+	/* If not running, "restart" will happen on open */
+	if (!netif_running(priv->netdev) && priv->dev_state != FXGMAC_DEV_START)
+		return;
+
+	mutex_lock(&priv->mutex);
+	fxgmac_stop(priv);
+	fxgmac_free_tx_data(priv);
+	fxgmac_free_rx_data(priv);
+	ret = fxgmac_start(priv);
+	if (ret < 0)
+		yt_err(priv, "%s err, ret = %d.\n", __func__, ret);
+
+	mutex_unlock(&priv->mutex);
+}
+
+static void fxgmac_restart_work(struct work_struct *work)
+{
+	rtnl_lock();
+	fxgmac_restart(container_of(work, struct fxgmac_pdata, restart_work));
+	rtnl_unlock();
+}
+
 static void fxgmac_config_powerdown(struct fxgmac_pdata *priv)
 {
 	FXGMAC_MAC_IO_WR_BITS(priv, MAC_CR, RE, 1); /* Enable MAC Rx */
@@ -433,6 +461,59 @@ int fxgmac_net_powerdown(struct fxgmac_pdata *priv)
 	fxgmac_free_rx_data(priv);
 
 	return 0;
+}
+
+static int fxgmac_calc_rx_buf_size(struct fxgmac_pdata *priv, unsigned int mtu)
+{
+	u32 rx_buf_size, max_mtu = FXGMAC_JUMBO_PACKET_MTU - ETH_HLEN;
+
+	if (mtu > max_mtu) {
+		yt_err(priv, "MTU exceeds maximum supported value\n");
+		return -EINVAL;
+	}
+
+	rx_buf_size = mtu + ETH_HLEN + ETH_FCS_LEN + VLAN_HLEN;
+	rx_buf_size =
+		clamp_val(rx_buf_size, FXGMAC_RX_MIN_BUF_SIZE, PAGE_SIZE * 4);
+
+	rx_buf_size = (rx_buf_size + FXGMAC_RX_BUF_ALIGN - 1) &
+		      ~(FXGMAC_RX_BUF_ALIGN - 1);
+
+	return rx_buf_size;
+}
+
+static int fxgmac_open(struct net_device *netdev)
+{
+	struct fxgmac_pdata *priv = netdev_priv(netdev);
+	int ret;
+
+	mutex_lock(&priv->mutex);
+	priv->dev_state = FXGMAC_DEV_OPEN;
+
+	/* Calculate the Rx buffer size before allocating rings */
+	ret = fxgmac_calc_rx_buf_size(priv, netdev->mtu);
+	if (ret < 0)
+		goto unlock;
+
+	priv->rx_buf_size = ret;
+	ret = fxgmac_channels_rings_alloc(priv);
+	if (ret < 0)
+		goto unlock;
+
+	INIT_WORK(&priv->restart_work, fxgmac_restart_work);
+	ret = fxgmac_start(priv);
+	if (ret < 0)
+		goto err_channels_and_rings;
+
+	mutex_unlock(&priv->mutex);
+	return 0;
+
+err_channels_and_rings:
+	fxgmac_channels_rings_free(priv);
+	yt_err(priv, "%s, channel alloc err\n", __func__);
+unlock:
+	mutex_unlock(&priv->mutex);
+	return ret;
 }
 
 #define EFUSE_FISRT_UPDATE_ADDR				255
@@ -931,4 +1012,13 @@ int fxgmac_drv_probe(struct device *dev, struct fxgmac_resources *res)
 err_free_netdev:
 	free_netdev(netdev);
 	return ret;
+}
+
+static const struct net_device_ops fxgmac_netdev_ops = {
+	.ndo_open		= fxgmac_open,
+};
+
+const struct net_device_ops *fxgmac_get_netdev_ops(void)
+{
+	return &fxgmac_netdev_ops;
 }
