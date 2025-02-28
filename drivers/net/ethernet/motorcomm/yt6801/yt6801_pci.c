@@ -80,6 +80,29 @@ static void fxgmac_remove(struct pci_dev *pcidev)
 	dev_dbg(dev, "%s has been removed\n", netdev->name);
 }
 
+static void __fxgmac_shutdown(struct pci_dev *pcidev)
+{
+	struct fxgmac_pdata *priv = dev_get_drvdata(&pcidev->dev);
+	struct net_device *netdev = priv->netdev;
+
+	rtnl_lock();
+	fxgmac_net_powerdown(priv);
+	netif_device_detach(netdev);
+	rtnl_unlock();
+}
+
+static void fxgmac_shutdown(struct pci_dev *pcidev)
+{
+	struct fxgmac_pdata *priv = dev_get_drvdata(&pcidev->dev);
+
+	mutex_lock(&priv->mutex);
+	 __fxgmac_shutdown(pcidev);
+	if (system_state == SYSTEM_POWER_OFF) {
+		pci_wake_from_d3(pcidev, false);
+		pci_set_power_state(pcidev, PCI_D3hot);
+	}
+	mutex_unlock(&priv->mutex);
+}
 #define MOTORCOMM_PCI_ID			0x1f0a
 #define YT6801_PCI_DEVICE_ID			0x6801
 
@@ -95,6 +118,7 @@ static struct pci_driver fxgmac_pci_driver = {
 	.id_table	= fxgmac_pci_tbl,
 	.probe		= fxgmac_probe,
 	.remove		= fxgmac_remove,
+	.shutdown	= fxgmac_shutdown,
 };
 
 module_pci_driver(fxgmac_pci_driver);
