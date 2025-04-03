@@ -180,3 +180,7 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# wheatfox debug
+vmlinux.asm
+vmlinux.readelf.txt
