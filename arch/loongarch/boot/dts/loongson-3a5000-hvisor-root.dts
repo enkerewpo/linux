@@ -1,0 +1,202 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+* Copyright (C) 2023 Loongson Technology Corporation Limited
+* Modified for hvisor by wheatfox(enkerewpo@hotmail.com) syswonder.org 2024
+*/
+
+/dts-v1/;
+
+#include "loongson-3a5000.dtsi"
+
+/ {
+	compatible = "loongson,ls3a5000-root", "loongson,ls3a5000";
+	model = "Loongson3 hvisor root zone board";
+	
+	aliases {
+		serial0 = &uart0;
+	};
+	
+	chosen {
+		stdout-path = "serial0:115200n8";
+		bootargs = "earlycon console=ttyS0,115200n8 initramfs_async=false rootwait debug";
+	};
+	
+	memory@200000 {
+		device_type = "memory";
+		reg = <0 0x00200000 0 0x0ee00000
+		0 0x90000000 0 0x10000000
+		0 0xf0000000 0 0x10000000
+		0 0xc0000000 0 0x30000000
+		>;
+	};
+	
+	hvisor_virtio_device {
+		compatible = "hvisor";
+		interrupt-parent = <&cpuintc>;
+		interrupts = <4>;
+	};
+	
+	reserved-memory {
+		#address-cells = <0x02>;
+		#size-cells = <0x02>;
+		ranges;
+		nonroot0xc0000000 {
+			no-map;
+			reg = <0x00 0xc0000000 0x00 0x30000000>;
+		};
+	};
+	
+	pcie@1a000000 {
+		compatible = "loongson,ls7a-pci";
+		
+		// configuration space
+		reg =
+		<0x00 0x1a000000 0x0 0x20000000>,
+		<0xfe 0x00000000 0x0 0x20000000>;
+		
+		#address-cells = <3>;
+		#size-cells = <2>;
+		device_type = "pci";
+		msi-parent = <&msi>;
+		bus-range = <0x0 0xff>;
+		
+		// PCIe resources
+		ranges =
+		<0x01000000 0x0 0x00008000 0x0 0x18408000 0x0 0x00008000>,// 0x01000000 (IO) [PCIe space base address][CPU space address][size]
+		<0x02000000 0x0 0x60000000 0x0 0x60000000 0x0 0x20000000>;// 0x02000000 (MEM) [PCIe space base address][CPU space address][size]
+		
+		// interrputs
+		interrupt-map-mask = <0xff00 0x00 0x00 0x7>;
+		interrupt-map =
+		// 00:04.0 A->31
+		<// 00:09.0 A->38
+		0x4800 0x00 0x00 0x01 0x8003 0x26 IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:0a.0 A->39
+		0x5000 0x00 0x00 0x01 0x8003 0x27 IRQ_TYPE_LEVEL_HIGH
+		
+		0x2000 0x00 0x00 0x01 0x8003 0x1f IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:04.0 B->32
+		0x2100 0x00 0x00 0x02 0x8003 0x20 IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:05.0 A->33
+		0x2800 0x00 0x00 0x01 0x8003 0x21 IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:05.1 B->34
+		0x2900 0x00 0x00 0x02 0x8003 0x22 IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:06.0 A->70
+		0x3000 0x00 0x00 0x01 0x8003 0x46 IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:06.1 B->71
+		0x3100 0x00 0x00 0x02 0x8003 0x47 IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:06.2 A->78
+		0x3200 0x00 0x00 0x01 0x8003 0x4e IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:07.0 A->79
+		0x3800 0x00 0x00 0x01 0x8003 0x4f IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:08.0 A->47
+		0x4000 0x00 0x00 0x01 0x8003 0x2f IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:0b.0 A->40
+		0x5800 0x00 0x00 0x01 0x8003 0x28 IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:0c.0 A->41
+		0x6000 0x00 0x00 0x01 0x8003 0x29 IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:0d.0 A->42
+		0x6800 0x00 0x00 0x01 0x8003 0x2a IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:0f.0 A->43
+		0x7800 0x00 0x00 0x01 0x8003 0x2b IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:10.0 A->44
+		0x8000 0x00 0x00 0x01 0x8003 0x2c IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:13.0 A->45
+		0x9800 0x00 0x00 0x01 0x8003 0x2d IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:16.0 A->255
+		0xb000 0x00 0x00 0x01 0x8003 0xff IRQ_TYPE_LEVEL_HIGH
+		
+		// 00:19.0 A->35
+		0xc800 0x00 0x00 0x01 0x8003 0x23 IRQ_TYPE_LEVEL_HIGH>;
+		
+		#interrupt-cells = <0x01>;
+		
+		// gmac0: ethernet@3,0 {
+		// 	reg = <0x1800 0x0 0x0 0x0 0x0>;
+		// 	interrupt-parent = <&pic>;
+		// 	interrupts = <12 IRQ_TYPE_LEVEL_HIGH>,
+		// 	<13 IRQ_TYPE_LEVEL_HIGH>;
+		// 	interrupt-names = "macirq", "eth_lpi";
+		
+		// 	phy-mode = "gmii";
+		// 	phy-handle = <&phy0>;
+		// 	mdio {
+		// 		compatible = "snps,dwmac-mdio";
+		// 		#address-cells = <1>;
+		// 		#size-cells = <0>;
+		// 		phy0: ethernet-phy@0 {
+		// 			reg = <2>;
+		// 		};
+		// 	};
+		// 	// status = "disabled";
+		// };
+		
+		// pcie@9,0 {
+		// 	reg = <0x4800 0x0 0x0 0x0 0x0>;
+		// 	#address-cells = <3>;
+		// 	#size-cells = <2>;
+		// 	device_type = "pci";
+		// 	interrupt-parent = <&pic>;
+		// 	#interrupt-cells = <1>;
+		// 	interrupt-map-mask = <0x0 0x0 0x0 0x0>;
+		// 	interrupt-map = <0x0 0x0 0x0 0x0 &pic 32 IRQ_TYPE_LEVEL_HIGH>;
+		// 	ranges;
+		// };// f0p0
+		
+		// pcie@a,0 {
+		// 	reg = <0x5000 0x0 0x0 0x0 0x0>;
+		// 	#address-cells = <3>;
+		// 	#size-cells = <2>;
+		// 	device_type = "pci";
+		// 	interrupt-parent = <&pic>;
+		// 	#interrupt-cells = <1>;
+		// 	interrupt-map-mask = <0x0 0x0 0x0 0x0>;
+		// 	interrupt-map = <0x0 0x0 0x0 0x0 &pic 33 IRQ_TYPE_LEVEL_HIGH>;
+		// 	ranges;
+		// };// f0p1
+		
+		// pcie@b,0 {
+		// 	reg = <0x5800 0x0 0x0 0x0 0x0>;
+		// 	#address-cells = <3>;
+		// 	#size-cells = <2>;
+		// 	device_type = "pci";
+		// 	interrupt-parent = <&pic>;
+		// 	#interrupt-cells = <1>;
+		// 	interrupt-map-mask = <0x0 0x0 0x0 0x0>;
+		// 	interrupt-map = <0x0 0x0 0x0 0x0 &pic 34 IRQ_TYPE_LEVEL_HIGH>;
+		// 	ranges;
+		// };// f0p2
+		
+		// pcie@c,0 {
+		// 	reg = <0x6000 0x0 0x0 0x0 0x0>;
+		// 	#address-cells = <3>;
+		// 	#size-cells = <2>;
+		// 	device_type = "pci";
+		// 	interrupt-parent = <&pic>;
+		// 	#interrupt-cells = <1>;
+		// 	interrupt-map-mask = <0x0 0x0 0x0 0x0>;
+		// 	interrupt-map = <0x0 0x0 0x0 0x0 &pic 35 IRQ_TYPE_LEVEL_HIGH>;
+		// 	ranges;
+		// };// f0p3
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
