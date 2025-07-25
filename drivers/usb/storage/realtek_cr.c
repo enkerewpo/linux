@@ -754,7 +754,8 @@ static void rts51x_modi_suspend_timer(struct rts51x_chip *chip)
 
 static void rts51x_suspend_timer_fn(struct timer_list *t)
 {
-	struct rts51x_chip *chip = from_timer(chip, t, rts51x_suspend_timer);
+	struct rts51x_chip *chip = timer_container_of(chip, t,
+						      rts51x_suspend_timer);
 	struct us_data *us = chip->us;
 
 	switch (rts51x_get_stat(chip)) {
@@ -934,7 +935,7 @@ static void realtek_cr_destructor(void *extra)
 
 #ifdef CONFIG_REALTEK_AUTOPM
 	if (ss_en) {
-		del_timer(&chip->rts51x_suspend_timer);
+		timer_delete(&chip->rts51x_suspend_timer);
 		chip->timer_expires = 0;
 	}
 #endif
